@@ -13,6 +13,7 @@ import shutil
 import urllib
 from urllib import request
 from bs4 import BeautifulSoup
+from whoosh.qparser.dateparse import DateParserPlugin
 
 if (not os.environ.get('PYTHONHTTPSVERIFY', '') and
 getattr(ssl, '_create_unverified_context', None)):
@@ -54,7 +55,7 @@ def create_search_window_one_entry(label, command) -> None:
     window.mainloop()
 
 def create_search_and_delete_window(search_label, search_command, delete_command, title: str, question: str) -> None:
-    def listar(event):
+    def listar(event=None):
         search_arg = search_entry.get()
         try:
             window.destroy()
@@ -62,7 +63,7 @@ def create_search_and_delete_window(search_label, search_command, delete_command
             crear_listbox_con_scrollbar(data)
             answer = messagebox.askyesno(title, question)
             if answer:
-                delete_command(data, search_arg)
+                delete_command(search_arg)
 
         except ValueError as e:
             messagebox.showwarning('Warning', str(e))
@@ -114,11 +115,12 @@ def search(indexdir: str, fields_to_search, str_query: str, limit: int, return_f
         if isinstance(fields_to_search, list):
             query = MultifieldParser(fields_to_search, ix.schema).parse(str_query)
         else:
-            query = QueryParser(fields_to_search, ix.schema).parse(str_query)
+            query = QueryParser(fields_to_search, ix.schema)
+            query.add_plugin(DateParserPlugin())
+            query = query.parse(str_query)
             
         for hit in searcher.search(query, limit=limit):
             datos = [str(hit[c]) for c in return_fields]
-            print(type(datos))
             results.append(tuple(datos))
     
     return results
@@ -175,6 +177,7 @@ def cargarDatos():
     #Crear indices Whoosh
     # TEXT no puede llevar unique=True
     schema = Schema(
+        id=ID(stored=True, unique=True),
         categoria=TEXT(stored=True),
         fecha=DATETIME(stored=True),
         titulo=TEXT(stored=True),
@@ -212,7 +215,7 @@ def cargarDatos():
                 resumen = meta.find("div", class_="meta-body").string.strip()
 
 
-            writer.add_document(titulo=titulo, categoria=categoria,
+            writer.add_document(id=str(a), titulo=titulo, categoria=categoria,
                 fecha=fecha, resumen=resumen)
             a+=1
                 
@@ -227,27 +230,30 @@ def buscar_por_resumen_o_titulo(frase: str) -> list[tuple[str, str, str, str]]:
     return search(INDEXDIR, ['titulo', 'resumen'], frase, None, ['categoria', 'fecha', 'titulo', 'resumen'])
 
 def buscar_por_fecha(fecha: str) -> list[tuple[str, str, str]]:
-    if not re.fullmatch('\d{2} [a-zA-Z]{3} \d{4}', fecha):
+    if not re.fullmatch('(\d{2}|\d) [a-zA-Z]{3} \d{4}', fecha):
         raise ValueError('La fecha tiene que seguir el formato dd MMM aaaa')
 
-    print(fecha)
-    fecha = datetime.strptime(fecha, '%d %b %Y')
-    fecha = datetime.strftime(fecha, '%Y%m%d')
-    return search(INDEXDIR, 'fecha', '{' + f'{fecha}TO]', None, ['categoria', 'fecha', 'titulo'])
+    # fecha = datetime.strptime(fecha.strip(), '%d %b %Y')
+    # fecha = datetime.strftime(fecha, '%Y%m%d')
+    return search(INDEXDIR, 'fecha', f'[{fecha}TO]', None, ['categoria', 'fecha', 'titulo'])
 
 def get_categorias() -> list[str]:
     ix = open_dir(INDEXDIR)
     all_docs = ix.searcher().documents()
-    categorias = [hit['categoria'] for hit in all_docs]
+    categorias = list(set(hit['categoria'] for hit in all_docs))
     ix.close()
     return categorias
 
 def buscar_por_categoria(categoria: str) -> list[tuple[str, str, str]]:
     return search(INDEXDIR, 'categoria', categoria.capitalize(), None, ['categoria', 'fecha', 'titulo'])
 
-def delete_by_titulo(data, titulo):
+def delete_by_titulo(titulo):
     ix = open_dir(INDEXDIR)
-    for _, _, titulo in data:
-        ix.delete_by_term('titulo', titulo.replace(' ', ' OR '))
+    writer = ix.writer()
+    data = search(INDEXDIR, 'titulo', titulo.replace(' ', ' OR '), None, ['id'])
+    for id_ in data:
+        writer.delete_by_term('id', id_)
+    writer.commit()
+    ix.close()
 
 start()
